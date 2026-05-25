@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+from holosoma.config_types.algo import LayerConfig, ModuleConfig, PPOModuleDictConfig
 from holosoma.config_types.experiment import ExperimentConfig, NightlyConfig, TrainingConfig
 from holosoma.config_values import (
     action,
@@ -196,7 +197,99 @@ __all__ = [
     "g1_29dof_wbt_fast_sac",
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_w_object",
+    "g1_29dof_wbt_equivariant",
 ]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Equivariant PPO variant
+# ──────────────────────────────────────────────────────────────────────────────
+
+_EXTRACTOR_CLASS = "holosoma.config_values.wbt.g1.equivariant_extractor.G1WBTActorExtractor"
+
+# Actor obs dim = 154  (see equivariant_extractor.py for the full breakdown)
+# Action irreps = "29x0e" — 29 scalar joint positions, invariant under rotation
+#
+# Hidden architecture:
+#   block1: LinearBlock("3x1o + 151x0e", n_scalars=128, n_vectors=16)
+#            → output "128x0e + 16x1o"  (dim = 176)
+#   block2: LinearBlock("128x0e + 16x1o", n_scalars=128, n_vectors=16)
+#            → output "128x0e + 16x1o"  (dim = 176)
+#   mu_layer: o3.Linear("128x0e + 16x1o", "29x0e")  → 29 scalars
+#
+# The 16 hidden vector channels carry equivariant orientation-error
+# representations through the network even though the final output is
+# purely scalar.  The Gate nonlinearity uses the augmented invariants
+# (norms + dot products of the 3 input vectors) to gate these channels.
+#
+# Critic: unchanged standard MLP [512, 256, 128] on the full 286-d critic_obs.
+# Using a plain invariant MLP for the critic provides stable training as
+# observed in the SAC reference implementation.
+#
+# Required PPO settings:
+#   empirical_normalization = False   (mean-subtraction would break equivariance)
+#   init_noise_std = 1.0              (same as base experiment)
+
+g1_29dof_wbt_equivariant = replace(
+    g1_29dof_wbt,
+    algo=replace(
+        g1_29dof_wbt.algo,
+        config=replace(
+            g1_29dof_wbt.algo.config,
+            # Equivariance requires raw observations — disable mean/var normalization.
+            empirical_normalization=False,
+            module_dict=PPOModuleDictConfig(
+                actor=ModuleConfig(
+                    type="Equivariant",
+                    input_dim=["actor_obs"],
+                    output_dim=[29],  # 29 joint positions
+                    layer_config=LayerConfig(
+                        # Extractor: parses flat actor_obs into irreps
+                        equivariant_extractor_class=_EXTRACTOR_CLASS,
+                        # Action space: 29 scalar (0e) joint positions
+                        # Invariant under any rotation of the base frame.
+                        equivariant_action_irreps="29x0e",
+                        # Hidden layer width:
+                        #   128 scalars  — learns nonlinear invariant features
+                        #   16 vectors   — maintains equivariant orientation-error
+                        #                  representations between layers
+                        equivariant_n_scalars=128,
+                        equivariant_n_vectors=16,
+                    ),
+                ),
+                critic=ModuleConfig(
+                    type="MLP",
+                    input_dim=["critic_obs"],
+                    output_dim=[1],
+                    layer_config=LayerConfig(
+                        hidden_dims=[512, 256, 128],
+                        activation="ELU",
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+
+"""
+Train with the equivariant actor:
+
+python src/holosoma/holosoma/train_agent.py \\
+    exp:g1-29dof-wbt-equivariant \\
+    logger:wandb \\
+    --command.setup_terms.motion_command.params.motion_config.motion_file="<PATH>.npz"
+
+Vs the MLP baseline:
+
+python src/holosoma/holosoma/train_agent.py \\
+    exp:g1-29dof-wbt \\
+    logger:wandb \\
+    --command.setup_terms.motion_command.params.motion_config.motion_file="<PATH>.npz"
+
+Expected benefits over the MLP baseline:
+  * Faster convergence on motions with varied initial yaw headings.
+  * Better generalisation when yaw noise in init_pose_config is high.
+  * No sensitivity to the robot's absolute facing direction.
+"""
 
 """
 Example 1: Robot only:

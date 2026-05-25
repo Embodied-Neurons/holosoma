@@ -69,6 +69,39 @@ class LayerConfig:
     module_input_name: tuple[str, ...] = ()
     """Input names for module. Only used for encoder modules."""
 
+    # ── Equivariant module fields (used when ModuleConfig.type == "Equivariant") ──
+
+    equivariant_extractor_class: str = ""
+    """Fully-qualified class path of the EquivariantFlatExtractor subclass.
+
+    Example: ``"myproject.extractors.MyExtractor"``.
+    The class must subclass
+    :class:`~holosoma.agents.modules.equivariant.EquivariantFlatExtractor`
+    and declare an ``irreps_out`` class attribute.
+    """
+
+    equivariant_action_irreps: str = "1x1o + 1x0e"
+    """e3nn irreps string describing the action space structure.
+
+    Vector slots (``1o``) share a single isotropic std to preserve SO(3)
+    equivariance.  Scalar slots (``0e``) each have an independent std.
+
+    Examples:
+
+    * ``"1x1o + 1x0e"``  — 3-D displacement + 1 gripper scalar (dim=4)
+    * ``"1x1o + 2x0e"``  — 3-D displacement + 2 scalar DoFs    (dim=5)
+    * ``"2x0e"``          — 2 purely scalar actions             (dim=2)
+    """
+
+    equivariant_n_scalars: int = 16
+    """Number of hidden scalar (0e) channels in each LinearBlock layer."""
+
+    equivariant_n_vectors: int = 8
+    """Number of hidden vector (1o) channels in each LinearBlock layer."""
+
+    equivariant_critic_hidden_dims: tuple[int, ...] = (64, 64)
+    """Hidden layer sizes for the invariant MLP critic."""
+
 
 @dataclass(frozen=True)
 class ModuleConfig:
